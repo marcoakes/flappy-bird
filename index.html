@@ -6,32 +6,18 @@
 <title>Flappy Bird</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
-body {
-  background:#000;
-  display:flex;
-  justify-content:center;
-  align-items:center;
-  height:100vh;
-  overflow:hidden;
-}
-canvas {
-  display:block;
-  /* keep 400x600 aspect, fill screen */
-  max-height:100vh;
-  max-width:calc(100vh * 400/600);
-  width:100%;
-  height:auto;
-}
+body { background:#000; display:flex; justify-content:center; align-items:center; height:100vh; }
+canvas { display:block; max-height:100vh; max-width:calc(100vh * 2 / 3); width:100%; height:auto; }
 </style>
 </head>
 <body>
 <canvas id="c" width="400" height="600"></canvas>
 <script>
 const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
+const ctx    = canvas.getContext('2d');
 const W = 400, H = 600;
 
-// Physics constants (tuned for 60fps baseline)
+// Physics
 const GRAVITY    = 0.45;
 const FLAP_VEL   = -8.5;
 const MAX_FALL   = 10;
@@ -41,199 +27,144 @@ const PIPE_SPACE = 185;
 const PIPE_W     = 52;
 const GROUND_H   = 70;
 const BIRD_X     = 120;
+const HS_KEY     = 'flappy_hs';
 
-const HS_KEY = 'flappy_hs';
+let state = 'menu';
+let score = 0;
+let highScore = +localStorage.getItem(HS_KEY) || 0;
+let flash = 0;
+let pipes = [];
 
-// Game state
-let state = 'menu'; // menu | playing | dead | gameover
-let bird, pipes, score, highScore, flash, frameCount;
-
-highScore = +localStorage.getItem(HS_KEY) || 0;
+// Bird always initialised so drawBird() never crashes
+let bird = { y: H/2 - 30, vy: 0, rot: 0, wing: 0, wDir: 1 };
 
 function startGame() {
-  bird = { y: H / 2 - 30, vy: 0, rot: 0, wing: 0, wDir: 1 };
+  bird  = { y: H/2 - 30, vy: 0, rot: 0, wing: 0, wDir: 1 };
   pipes = [];
   score = 0;
   flash = 0;
-  frameCount = 0;
   state = 'playing';
-  // queue first pipe
   addPipe(W + 80);
 }
 
 function addPipe(x) {
   const margin = 70;
-  const topH = margin + Math.random() * (H - GROUND_H - PIPE_GAP - margin * 2);
-  pipes.push({ x, topH, passed: false });
+  const topH   = margin + Math.random() * (H - GROUND_H - PIPE_GAP - margin * 2);
+  pipes.push({ x, topH, passed: false, nextSpawned: false });
 }
 
-// ─── Input ────────────────────────────────────────────────────────────────
-function handleInput() {
-  if (state === 'menu') {
-    startGame();
-  } else if (state === 'playing') {
-    bird.vy = FLAP_VEL;
-  } else if (state === 'gameover') {
-    state = 'menu';
+// ── Input ─────────────────────────────────────────────────────────────────
+function tap() {
+  if      (state === 'menu')     { startGame(); }
+  else if (state === 'playing')  { bird.vy = FLAP_VEL; }
+  else if (state === 'gameover') { state = 'menu'; }
+}
+
+window.addEventListener('keydown',  e => { if (e.code === 'Space') { e.preventDefault(); tap(); } });
+canvas.addEventListener('mousedown', e => { e.preventDefault(); tap(); });
+canvas.addEventListener('touchstart',e => { e.preventDefault(); tap(); }, { passive: false });
+
+// ── Update ────────────────────────────────────────────────────────────────
+function update(dt) {
+  // Tick flash regardless of state
+  if (flash > 0) {
+    flash -= dt;
+    if (flash <= 0 && state === 'dead') state = 'gameover';
+    return; // freeze world while flashing
   }
-}
-
-window.addEventListener('keydown', e => {
-  if (e.code === 'Space') { e.preventDefault(); handleInput(); }
-});
-canvas.addEventListener('mousedown', e => { e.preventDefault(); handleInput(); });
-canvas.addEventListener('touchstart', e => { e.preventDefault(); handleInput(); }, { passive: false });
-
-// ─── Update ───────────────────────────────────────────────────────────────
-function update(s) {
-  // Always tick flash down
-  if (flash > 0) { flash -= s; return; } // freeze world during flash
 
   if (state !== 'playing') return;
 
-  frameCount += s;
+  // Bird physics
+  bird.vy = Math.min(bird.vy + GRAVITY * dt, MAX_FALL);
+  bird.y += bird.vy * dt;
 
-  // Bird
-  bird.vy = Math.min(bird.vy + GRAVITY * s, MAX_FALL);
-  bird.y += bird.vy * s;
-
-  // Rotation: tilt up on flap, nose-dive on fall
+  // Rotation
   const targetRot = Math.max(-25, Math.min(85, bird.vy * 5.5));
-  bird.rot += (targetRot - bird.rot) * 0.18 * s;
+  bird.rot += (targetRot - bird.rot) * 0.18 * dt;
 
-  // Wing
-  bird.wing += bird.wDir * 0.25 * s;
+  // Wing animation
+  bird.wing += bird.wDir * 0.25 * dt;
   if (bird.wing > 1 || bird.wing < -1) bird.wDir *= -1;
 
   // Ceiling
   if (bird.y < 16) { bird.y = 16; bird.vy = 0; }
 
   // Ground
-  if (bird.y > H - GROUND_H - 16) {
-    bird.y = H - GROUND_H - 16;
-    kill();
-    return;
-  }
+  if (bird.y > H - GROUND_H - 16) { bird.y = H - GROUND_H - 16; die(); return; }
 
   // Pipes
   for (let i = pipes.length - 1; i >= 0; i--) {
     const p = pipes[i];
-    p.x -= PIPE_SPEED * s;
+    p.x -= PIPE_SPEED * dt;
 
-    // Spawn next pipe
     if (!p.nextSpawned && p.x < W - PIPE_SPACE) {
       p.nextSpawned = true;
       addPipe(W + PIPE_W);
     }
 
-    // Score
     if (!p.passed && p.x + PIPE_W < BIRD_X) {
       p.passed = true;
       score++;
-      if (score > highScore) {
-        highScore = score;
-        localStorage.setItem(HS_KEY, highScore);
-      }
+      if (score > highScore) { highScore = score; localStorage.setItem(HS_KEY, highScore); }
     }
 
-    // Remove old pipes
     if (p.x + PIPE_W < -10) { pipes.splice(i, 1); continue; }
 
-    // Collision (slightly forgiving hitbox)
-    const bL = BIRD_X - 11, bR = BIRD_X + 11;
-    const bT = bird.y  - 10, bB = bird.y  + 10;
-    const pL = p.x,          pR = p.x + PIPE_W;
-    if (bR > pL && bL < pR) {
-      if (bT < p.topH || bB > p.topH + PIPE_GAP) {
-        kill();
-        return;
-      }
+    // Collision (forgiving hitbox — 4px inset)
+    const bL = BIRD_X - 10, bR = BIRD_X + 10;
+    const bT = bird.y  - 9,  bB = bird.y  + 9;
+    if (bR > p.x && bL < p.x + PIPE_W) {
+      if (bT < p.topH || bB > p.topH + PIPE_GAP) { die(); return; }
     }
   }
 }
 
-function kill() {
+function die() {
+  if (score > highScore) { highScore = score; localStorage.setItem(HS_KEY, highScore); }
   state = 'dead';
-  flash = 12;
-  if (score > highScore) {
-    highScore = score;
-    localStorage.setItem(HS_KEY, highScore);
-  }
-  // After flash ends, move to gameover
+  flash = 10;
 }
 
-// ─── Draw helpers ─────────────────────────────────────────────────────────
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x+r, y);
-  ctx.lineTo(x+w-r, y);   ctx.quadraticCurveTo(x+w, y,   x+w, y+r);
-  ctx.lineTo(x+w, y+h-r); ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
-  ctx.lineTo(x+r, y+h);   ctx.quadraticCurveTo(x, y+h,   x, y+h-r);
-  ctx.lineTo(x, y+r);     ctx.quadraticCurveTo(x, y,     x+r, y);
-  ctx.closePath();
-}
-
+// ── Draw ──────────────────────────────────────────────────────────────────
 function drawBg() {
-  // Sky
   const sky = ctx.createLinearGradient(0, 0, 0, H - GROUND_H);
   sky.addColorStop(0, '#70C5CE');
   sky.addColorStop(1, '#B8E8F0');
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H - GROUND_H);
 
-  // Clouds
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
-  [
-    [50,  70, 55, 18],
-    [160, 45, 45, 15],
-    [270, 90, 60, 20],
-    [355, 55, 38, 14],
-  ].forEach(([x, y, rw, rh]) => {
+  [[55,70,55,18],[165,45,45,15],[275,90,58,20],[355,58,38,14]].forEach(([x,y,rw,rh]) => {
     ctx.beginPath(); ctx.ellipse(x, y, rw, rh, 0, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x+18, y-10, rw*0.55, rh*0.75, 0, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(x-16, y-6,  rw*0.5,  rh*0.65, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x+18, y-10, rw*.55, rh*.75, 0, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x-15, y-6, rw*.5, rh*.65, 0, 0, Math.PI*2); ctx.fill();
   });
 
-  // Ground grass
   ctx.fillStyle = '#5EA832';
   ctx.fillRect(0, H - GROUND_H, W, 20);
-  // Ground dirt
   ctx.fillStyle = '#C8A46A';
   ctx.fillRect(0, H - GROUND_H + 20, W, GROUND_H - 20);
 }
 
-function drawPipe(x, y, w, h, capOnBottom) {
-  // Body
+function drawPipe(x, y, w, h, capBottom) {
   const g = ctx.createLinearGradient(x, 0, x+w, 0);
   g.addColorStop(0,   '#3A7D0A');
-  g.addColorStop(0.25,'#6DBF2A');
-  g.addColorStop(0.5, '#4CAF11');
+  g.addColorStop(0.3, '#6DBF2A');
+  g.addColorStop(0.7, '#4CAF11');
   g.addColorStop(1,   '#2E6B07');
   ctx.fillStyle = g;
-  if (capOnBottom) ctx.fillRect(x, y, w, h - 18);
-  else             ctx.fillRect(x, y + 18, w, h - 18);
+  if (capBottom) ctx.fillRect(x, y, w, h - 18);
+  else           ctx.fillRect(x, y + 18, w, h - 18);
 
-  // Cap
-  const capG = ctx.createLinearGradient(x-5, 0, x+w+5, 0);
-  capG.addColorStop(0,   '#2E6B07');
-  capG.addColorStop(0.2, '#6DBF2A');
-  capG.addColorStop(0.5, '#4CAF11');
-  capG.addColorStop(1,   '#2E6B07');
-  ctx.fillStyle = capG;
-  if (capOnBottom) ctx.fillRect(x-5, y + h - 18, w+10, 18);
-  else             ctx.fillRect(x-5, y, w+10, 18);
-
-  // Highlight stripe
-  ctx.fillStyle = 'rgba(255,255,255,0.15)';
-  if (capOnBottom) ctx.fillRect(x+6, y, 8, h-18);
-  else             ctx.fillRect(x+6, y+18, 8, h-18);
+  ctx.fillStyle = '#4CAF11';
+  if (capBottom) ctx.fillRect(x - 5, y + h - 18, w + 10, 18);
+  else           ctx.fillRect(x - 5, y, w + 10, 18);
 }
 
 function drawPipes() {
   pipes.forEach(p => {
-    // Top pipe
     drawPipe(p.x, 0, PIPE_W, p.topH, true);
-    // Bottom pipe
     const botY = p.topH + PIPE_GAP;
     drawPipe(p.x, botY, PIPE_W, H - GROUND_H - botY, false);
   });
@@ -244,38 +175,29 @@ function drawBird() {
   ctx.translate(BIRD_X, bird.y);
   ctx.rotate(bird.rot * Math.PI / 180);
 
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.15)';
-  ctx.beginPath(); ctx.ellipse(2, 18, 14, 5, 0, 0, Math.PI*2); ctx.fill();
-
   // Body
   ctx.fillStyle = '#FFD700';
   ctx.beginPath(); ctx.ellipse(0, 0, 17, 13, 0, 0, Math.PI*2); ctx.fill();
 
   // Wing
-  const wy = 5 + bird.wing * 7;
   ctx.fillStyle = '#FFA000';
-  ctx.beginPath(); ctx.ellipse(-3, wy, 11, 7, -0.4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(-3, 5 + bird.wing * 7, 11, 7, -0.4, 0, Math.PI*2); ctx.fill();
 
   // Belly
   ctx.fillStyle = '#FFE57F';
   ctx.beginPath(); ctx.ellipse(3, 3, 9, 7, 0.2, 0, Math.PI*2); ctx.fill();
 
-  // Eye white
+  // Eye
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(7, -5, 5, 0, Math.PI*2); ctx.fill();
-  // Pupil
   ctx.fillStyle = '#111';
   ctx.beginPath(); ctx.arc(8.5, -5, 2.5, 0, Math.PI*2); ctx.fill();
-  // Gleam
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(9.5, -6.5, 1, 0, Math.PI*2); ctx.fill();
 
   // Beak
   ctx.fillStyle = '#FF8F00';
-  ctx.beginPath();
-  ctx.moveTo(13, -2); ctx.lineTo(21, 1); ctx.lineTo(13, 4);
-  ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(13,-2); ctx.lineTo(21,1); ctx.lineTo(13,4); ctx.closePath(); ctx.fill();
 
   ctx.restore();
 }
@@ -290,104 +212,66 @@ function drawScore() {
   ctx.fillText(score, W/2, 62);
 }
 
-function panel(x, y, w, h) {
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  roundRect(x, y, w, h, 14);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-}
-
 function drawMenu() {
-  panel(W/2-150, H/2-140, 300, 270);
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(W/2-145, H/2-135, 290, 265);
 
   ctx.textAlign = 'center';
-
-  // Title
-  ctx.font = 'bold 50px Arial';
+  ctx.font = 'bold 52px Arial';
   ctx.lineWidth = 4;
   ctx.strokeStyle = '#CC6600';
-  ctx.strokeText('FLAPPY', W/2, H/2 - 90);
+  ctx.strokeText('FLAPPY BIRD', W/2, H/2 - 70);
   ctx.fillStyle = '#FFD700';
-  ctx.fillText('FLAPPY', W/2, H/2 - 90);
+  ctx.fillText('FLAPPY BIRD', W/2, H/2 - 70);
 
-  ctx.strokeText('BIRD', W/2, H/2 - 42);
-  ctx.fillText('BIRD', W/2, H/2 - 42);
-
-  // Divider
-  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(W/2-80, H/2-20); ctx.lineTo(W/2+80, H/2-20); ctx.stroke();
-
-  // Prompt
   ctx.fillStyle = '#fff';
-  ctx.font = 'bold 19px Arial';
+  ctx.font = 'bold 20px Arial';
   ctx.fillText('Tap or press Space', W/2, H/2 + 10);
-  ctx.fillText('to start', W/2, H/2 + 35);
+  ctx.fillText('to play', W/2, H/2 + 38);
 
   if (highScore > 0) {
     ctx.fillStyle = '#FFD700';
-    ctx.font = '17px Arial';
-    ctx.fillText('Best: ' + highScore, W/2, H/2 + 70);
+    ctx.font = '18px Arial';
+    ctx.fillText('Best: ' + highScore, W/2, H/2 + 80);
   }
-
-  ctx.fillStyle = 'rgba(255,255,255,0.45)';
-  ctx.font = '13px Arial';
-  ctx.fillText('avoid the pipes · good luck!', W/2, H/2 + 105);
 }
 
 function drawGameOver() {
-  panel(W/2-150, H/2-145, 300, 295);
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(W/2-145, H/2-135, 290, 280);
 
   ctx.textAlign = 'center';
-
-  ctx.font = 'bold 46px Arial';
+  ctx.font = 'bold 44px Arial';
   ctx.lineWidth = 4;
   ctx.strokeStyle = '#7B0000';
-  ctx.strokeText('GAME OVER', W/2, H/2 - 90);
+  ctx.strokeText('GAME OVER', W/2, H/2 - 80);
   ctx.fillStyle = '#FF5252';
-  ctx.fillText('GAME OVER', W/2, H/2 - 90);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-  ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(W/2-80, H/2-62); ctx.lineTo(W/2+80, H/2-62); ctx.stroke();
+  ctx.fillText('GAME OVER', W/2, H/2 - 80);
 
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 28px Arial';
-  ctx.fillText('Score: ' + score, W/2, H/2 - 25);
+  ctx.fillText('Score: ' + score, W/2, H/2 - 20);
 
   ctx.fillStyle = '#FFD700';
-  ctx.font = '20px Arial';
-  ctx.fillText('Best: ' + highScore, W/2, H/2 + 10);
-
-  // Medal
-  const medal = score >= 40 ? ['💎','Plat'] : score >= 30 ? ['🥇','Gold'] : score >= 20 ? ['🥈','Silv'] : score >= 10 ? ['🥉','Brnz'] : null;
-  if (medal) {
-    ctx.font = '32px Arial';
-    ctx.fillText(medal[0], W/2, H/2 + 60);
-  }
+  ctx.font = '22px Arial';
+  ctx.fillText('Best: ' + highScore, W/2, H/2 + 18);
 
   ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = '16px Arial';
+  ctx.font = '17px Arial';
   ctx.fillText('Tap or Space to play again', W/2, H/2 + 105);
 }
 
-// ─── Main loop ────────────────────────────────────────────────────────────
+// ── Loop ──────────────────────────────────────────────────────────────────
 let lastTs = null;
 
 function loop(ts) {
   if (!lastTs) lastTs = ts;
-  const rawDt = (ts - lastTs) / (1000 / 60);
+  const dt = Math.min((ts - lastTs) / (1000/60), 3);
   lastTs = ts;
-  const dt = Math.min(rawDt, 3); // cap spike frames
 
   update(dt);
 
-  // If flash just expired, switch to gameover
-  if (state === 'dead' && flash <= 0) state = 'gameover';
-
-  // White flash
+  // White flash on death
   if (flash > 0) {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, W, H);
@@ -395,10 +279,9 @@ function loop(ts) {
     return;
   }
 
-  // Normal render
   drawBg();
   drawPipes();
-  drawBird();
+  drawBird(); // always safe — bird is always initialised
 
   if (state === 'playing')  drawScore();
   if (state === 'menu')     drawMenu();
