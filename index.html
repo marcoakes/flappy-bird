@@ -95,8 +95,8 @@ canvas.addEventListener('touchstart', e => { e.preventDefault(); onFlap(); }, { 
 
 // ── Physics ────────────────────────────────────────────────────────────────
 function update(dt) {
-  // dt normalised to 60fps
-  const s = dt * 60;
+  // dt normalised to 60fps (1.0 = one frame at 60fps)
+  const s = dt;
 
   if (state !== 'playing') return;
 
